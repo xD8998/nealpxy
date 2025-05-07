@@ -1,7 +1,7 @@
 {
   "name": "infinite-craft-proxy",
-  "version": "1.0.0",
-  "description": "A full reverse proxy for Infinite Craft using Node.js, Express, and Puppeteer",
+  "version": "1.1.0",
+  "description": "Full reverse proxy for Infinite Craft with Cloudflare evasions",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,8 +9,13 @@
   "author": "xD89",
   "license": "MIT",
   "dependencies": {
+    "dotenv": "^10.1.0",
     "express": "^5.1.0",
     "http-proxy-middleware": "^3.0.5",
-    "puppeteer": "^24.8.1"
+    "puppeteer": "^24.8.1",
+    "puppeteer-extra": "^4.3.2",
+    "puppeteer-extra-plugin-stealth": "^2.12.0",
+    "puppeteer-extra-plugin-proxy": "^1.0.2",
+    "2captcha-ts": "^4.0.1"
   }
 }
