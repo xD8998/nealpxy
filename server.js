@@ -1,26 +1,68 @@
+/* eslint-disable no-console */
+require('dotenv').config();
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
-const puppeteer = require('puppeteer');
+const puppeteerExtra = require('puppeteer-extra');
+const StealthPlugin   = require('puppeteer-extra-plugin-stealth');
+const ProxyPlugin     = require('puppeteer-extra-plugin-proxy');
+const { Solver }      = require('2captcha-ts');      // lightweight 2Captcha wrapper
 
+// ─── Setup Stealth + (optional) proxy rotation ────────────────────────────────
+puppeteerExtra.use(StealthPlugin());
+
+const proxies = process.env.PROXY_LIST ? process.env.PROXY_LIST.split(',') : [];
+let p = 0;
+function nextProxy() {
+  if (!proxies.length) return null;
+  return proxies[(p++ % proxies.length)].trim();
+}
+
+// ─── Solve CAPTCHAs (Cloudflare “Turnstile”) when encountered ────────────────
+const captchaSolver = new Solver(process.env.CAPTCHA_API_KEY || '');
+
+async function launchBrowser() {
+  const proxyUrl = nextProxy();
+  if (proxyUrl) puppeteerExtra.use(ProxyPlugin({ proxy: proxyUrl }));
+  return puppeteerExtra.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+}
+
+// ─── Express server ───────────────────────────────────────────────────────────
 const app = express();
 
-// 1️⃣ Puppeteer route to fully render Cloudflare‑protected pages
+/* 1️⃣ HEADLESS-RENDERED ROUTE (bypasses JS challenge / captcha) */
 app.get('/infinite-craft', async (req, res, next) => {
   try {
-    const browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+    const browser = await launchBrowser();
     const page = await browser.newPage();
 
-    // Spoof headers to look like a real browser
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
     );
     await page.setExtraHTTPHeaders({
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9',
       'Accept-Language': 'en-US,en;q=0.9',
-      Referer: 'https://google.com/',
+      Referer: 'https://google.com/'
+    });
+
+    // Hook: auto-solve Cloudflare Turnstile if it shows up
+    page.on('response', async (resp) => {
+      if (resp.url().includes('/cdn-cgi/challenge-platform')) {
+        const siteKey = await page.$eval('iframe[src*="turnstile"]', el =>
+          new URL(el.src).searchParams.get('sitekey')
+        );
+        if (siteKey && captchaSolver.apiKey) {
+          const token = await captchaSolver.turnstile(
+            siteKey, page.url(), { invisible: 1 }
+          );
+          await page.evaluate((t) => {
+            document.querySelector('textarea[name="cf-turnstile-response"]').value = t;
+            document.querySelector('form').submit();
+          }, token);
+        }
+      }
     });
 
     await page.goto('https://neal.fun/infinite-craft/', { waitUntil: 'networkidle0' });
@@ -28,13 +70,12 @@ app.get('/infinite-craft', async (req, res, next) => {
     await browser.close();
     return res.send(html);
   } catch (err) {
-    console.error('Puppeteer error:', err);
-    // Fallback to proxy if Puppeteer fails
-    return next();
+    console.error('Puppeteer route error:', err);
+    return next();           // fallback to plain proxy
   }
 });
 
-// 2️⃣ Standard reverse‑proxy for all other assets & routes, with header spoofing
+/* 2️⃣ GENERIC REVERSE-PROXY FOR EVERYTHING ELSE */
 app.use(
   '/',
   createProxyMiddleware({
@@ -42,21 +83,18 @@ app.use(
     changeOrigin: true,
     selfHandleResponse: false,
     pathRewrite: { '^/': '/' },
-    onProxyReq(proxyReq, req, res) {
-      // Remove compression so we can read/manipulate if needed
+    onProxyReq: (proxyReq) => {
       proxyReq.removeHeader('accept-encoding');
-      // Spoof browser headers
-      proxyReq.setHeader(
-        'User-Agent',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36'
-      );
-      proxyReq.setHeader('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9');
+      proxyReq.setHeader('User-Agent',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
+      proxyReq.setHeader('Accept',
+        'text/html,application/xhtml+xml,application/xml;q=0.9');
       proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
       proxyReq.setHeader('Referer', 'https://google.com/');
-    },
+    }
   })
 );
 
-app.listen(3000, () => {
-  console.log('Proxy + Puppeteer fallback running on http://localhost:3000');
-});
+app.listen(3000, () =>
+  console.log('Proxy + Stealth + Captcha-solver live on http://localhost:3000')
+);
