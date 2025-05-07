@@ -12,7 +12,7 @@ const { Solver } = require('2captcha-ts');
 
 puppeteerExtra.use(StealthPlugin());
 
-// Proxy rotation
+// Proxy rotation setup
 const proxies = process.env.PROXY_LIST?.split(',').map(x => x.trim()) || [];
 let idx = 0;
 function nextProxy() {
@@ -36,12 +36,15 @@ async function launchBrowser() {
 
 const app = express();
 
-// 1️⃣ Puppeteer‑fetched HTML (Cloudflare bypass)
+// 1️⃣ Puppeteer‑rendered route (Cloudflare bypass + full UI support)
 app.get('/infinite-craft', async (req, res, next) => {
   let browser;
   try {
     browser = await launchBrowser();
     const page = await browser.newPage();
+
+    // Spoof a realistic desktop viewport for proper layout
+    await page.setViewport({ width: 1366, height: 768, deviceScaleFactor: 1 });
 
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
@@ -52,7 +55,7 @@ app.get('/infinite-craft', async (req, res, next) => {
       Referer: 'https://google.com/'
     });
 
-    // Wait for full load (includes dynamically injected JS/CSS)
+    // Wait for all network activity to finish
     await page.goto('https://neal.fun/infinite-craft/', {
       waitUntil: 'networkidle2',
       timeout: 60000
@@ -61,13 +64,19 @@ app.get('/infinite-craft', async (req, res, next) => {
     let html = await page.content();
     await browser.close();
 
-    // Remove embedded CSP <meta> tags
+    // Inject <base> so relative URLs resolve correctly
+    html = html.replace(
+      /<head(\s|>)/i,
+      `<head$1<base href="https://neal.fun/">`
+    );
+
+    // Remove any embedded Content-Security-Policy meta tags
     html = html.replace(
       /<meta http-equiv="Content-Security-Policy"[^>]*>/gi,
       ''
     );
 
-    // Strip Cloudflare iframe injector at bottom
+    // Strip Cloudflare's iframe injector script at the bottom
     html = html.replace(
       /<script>\(function\(\)\{[\s\S]*?<\/iframe>\s*<\/script>/i,
       ''
@@ -77,12 +86,14 @@ app.get('/infinite-craft', async (req, res, next) => {
 
   } catch (err) {
     console.error('Puppeteer route error:', err.message);
-    if (browser) await browser.close().catch(() => {});
-    return next(); // fallback to proxy
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    return next();  // fallback to reverse proxy
   }
 });
 
-// 2️⃣ Full reverse‑proxy for all other assets & routes
+// 2️⃣ Standard reverse-proxy for all other assets and routes
 app.use(
   '/',
   createProxyMiddleware({
@@ -101,7 +112,7 @@ app.use(
       proxyReq.setHeader('Referer', 'https://google.com/');
     },
     onProxyRes(proxyRes) {
-      // Remove CSP & frame headers so proxied JS/CSS can run
+      // Remove restrictions so CSS/JS/images execute via your domain
       delete proxyRes.headers['content-security-policy'];
       delete proxyRes.headers['content-security-policy-report-only'];
       delete proxyRes.headers['x-frame-options'];
@@ -110,5 +121,5 @@ app.use(
 );
 
 app.listen(3000, () => {
-  console.log('Proxy + Puppeteer (networkidle2, CSP/iframe stripped) running on http://localhost:3000');
+  console.log('Proxy + Puppeteer (networkidle2, viewport & <base> injected) running on http://localhost:3000');
 });
