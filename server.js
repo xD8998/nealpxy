@@ -12,28 +12,31 @@ const { Solver } = require('2captcha-ts');
 
 puppeteerExtra.use(StealthPlugin());
 
-const proxies = process.env.PROXY_LIST?.split(',').map(p => p.trim()) || [];
+// Proxy rotation
+const proxies = process.env.PROXY_LIST?.split(',').map(x => x.trim()) || [];
 let idx = 0;
 function nextProxy() {
   return proxies.length ? proxies[idx++ % proxies.length] : null;
 }
 
-const captchaSolver = new Solver(process.env.CAPTCHA_API_KEY || '');
-
 async function launchBrowser() {
-  const proxyURL = nextProxy();
-  if (proxyURL) puppeteerExtra.use(ProxyPlugin({ proxy: proxyURL }));
-
-  return puppeteerExtra.launch({
+  const browserOpts = {
     executablePath: puppeteer.executablePath(),
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  };
+
+  const proxyURL = nextProxy();
+  if (proxyURL) {
+    puppeteerExtra.use(ProxyPlugin({ proxy: proxyURL }));
+  }
+
+  return puppeteerExtra.launch(browserOpts);
 }
 
 const app = express();
 
-// 1️⃣ Headless-rendered route (Cloudflare bypass)
+// 1️⃣ Puppeteer‑fetched HTML (Cloudflare bypass)
 app.get('/infinite-craft', async (req, res, next) => {
   let browser;
   try {
@@ -49,15 +52,21 @@ app.get('/infinite-craft', async (req, res, next) => {
       Referer: 'https://google.com/'
     });
 
-    // Optional: hook in captchaSolver here if you need Turnstile solving
-
     await page.goto('https://neal.fun/infinite-craft/', {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
 
-    const html = await page.content();
+    let html = await page.content();
     await browser.close();
+
+    // Remove any embedded Content-Security-Policy <meta> tags
+    html = html.replace(
+      /<meta http-equiv="Content-Security-Policy"[^>]*>/gi,
+      ''
+    );
+
+    // Send the cleaned HTML
     return res.send(html);
 
   } catch (err) {
@@ -67,7 +76,7 @@ app.get('/infinite-craft', async (req, res, next) => {
   }
 });
 
-// 2️⃣ Standard reverse-proxy for all other assets
+// 2️⃣ Full reverse‑proxy for all other assets & routes
 app.use(
   '/',
   createProxyMiddleware({
@@ -84,10 +93,15 @@ app.use(
       proxyReq.setHeader('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9');
       proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
       proxyReq.setHeader('Referer', 'https://google.com/');
+    },
+    onProxyRes(proxyRes) {
+      // Remove CSP headers so the browser will load proxied scripts/CSS/images
+      delete proxyRes.headers['content-security-policy'];
+      delete proxyRes.headers['content-security-policy-report-only'];
     }
   })
 );
 
 app.listen(3000, () => {
-  console.log('Proxy + Puppeteer (60 s timeout) live on http://localhost:3000');
+  console.log('Proxy + Puppeteer (stripping CSP) live on http://localhost:3000');
 });
