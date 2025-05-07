@@ -52,21 +52,27 @@ app.get('/infinite-craft', async (req, res, next) => {
       Referer: 'https://google.com/'
     });
 
+    // Wait for full load (includes dynamically injected JS/CSS)
     await page.goto('https://neal.fun/infinite-craft/', {
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'networkidle2',
       timeout: 60000
     });
 
     let html = await page.content();
     await browser.close();
 
-    // Remove any embedded Content-Security-Policy <meta> tags
+    // Remove embedded CSP <meta> tags
     html = html.replace(
       /<meta http-equiv="Content-Security-Policy"[^>]*>/gi,
       ''
     );
 
-    // Send the cleaned HTML
+    // Strip Cloudflare iframe injector at bottom
+    html = html.replace(
+      /<script>\(function\(\)\{[\s\S]*?<\/iframe>\s*<\/script>/i,
+      ''
+    );
+
     return res.send(html);
 
   } catch (err) {
@@ -95,13 +101,14 @@ app.use(
       proxyReq.setHeader('Referer', 'https://google.com/');
     },
     onProxyRes(proxyRes) {
-      // Remove CSP headers so the browser will load proxied scripts/CSS/images
+      // Remove CSP & frame headers so proxied JS/CSS can run
       delete proxyRes.headers['content-security-policy'];
       delete proxyRes.headers['content-security-policy-report-only'];
+      delete proxyRes.headers['x-frame-options'];
     }
   })
 );
 
 app.listen(3000, () => {
-  console.log('Proxy + Puppeteer (stripping CSP) live on http://localhost:3000');
+  console.log('Proxy + Puppeteer (networkidle2, CSP/iframe stripped) running on http://localhost:3000');
 });
