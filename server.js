@@ -2,124 +2,94 @@
 require('dotenv').config();
 
 const express = require('express');
+const http = require('http');
 const { createProxyMiddleware } = require('http-proxy-middleware');
+const { Server } = require('socket.io');
 
-const puppeteer = require('puppeteer');
-const puppeteerExtra = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const ProxyPlugin = require('puppeteer-extra-plugin-proxy');
-const { Solver } = require('2captcha-ts');
-
-puppeteerExtra.use(StealthPlugin());
-
-// Proxy rotation setup
-const proxies = process.env.PROXY_LIST?.split(',').map(x => x.trim()) || [];
-let idx = 0;
-function nextProxy() {
-  return proxies.length ? proxies[idx++ % proxies.length] : null;
-}
-
-async function launchBrowser() {
-  const browserOpts = {
-    executablePath: puppeteer.executablePath(),
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  };
-
-  const proxyURL = nextProxy();
-  if (proxyURL) {
-    puppeteerExtra.use(ProxyPlugin({ proxy: proxyURL }));
-  }
-
-  return puppeteerExtra.launch(browserOpts);
-}
+const COOKIE_CLICKER_HOST = 'https://orteil.dashnet.org';
+let totalCookies = 0;
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
 
-// 1️⃣ Puppeteer‑rendered route (Cloudflare bypass + full UI support)
-app.get('/infinite-craft', async (req, res, next) => {
-  let browser;
-  try {
-    browser = await launchBrowser();
-    const page = await browser.newPage();
+// —————————————————————————————
+// 1) Real‑time state via Socket.IO
+// —————————————————————————————
+io.on('connection', socket => {
+  // send current count on join
+  socket.emit('sync', totalCookies);
 
-    // Spoof a realistic desktop viewport for proper layout
-    await page.setViewport({ width: 1366, height: 768, deviceScaleFactor: 1 });
-
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
-    );
-    await page.setExtraHTTPHeaders({
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9',
-      'Accept-Language': 'en-US,en;q=0.9',
-      Referer: 'https://google.com/'
-    });
-
-    // Wait for all network activity to finish
-    await page.goto('https://neal.fun/infinite-craft/', {
-      waitUntil: 'networkidle2',
-      timeout: 60000
-    });
-
-    let html = await page.content();
-    await browser.close();
-
-    // Inject <base> so relative URLs resolve correctly
-    html = html.replace(
-      /<head(\s|>)/i,
-      `<head$1<base href="https://neal.fun/">`
-    );
-
-    // Remove any embedded Content-Security-Policy meta tags
-    html = html.replace(
-      /<meta http-equiv="Content-Security-Policy"[^>]*>/gi,
-      ''
-    );
-
-    // Strip Cloudflare's iframe injector script at the bottom
-    html = html.replace(
-      /<script>\(function\(\)\{[\s\S]*?<\/iframe>\s*<\/script>/i,
-      ''
-    );
-
-    return res.send(html);
-
-  } catch (err) {
-    console.error('Puppeteer route error:', err.message);
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
-    return next();  // fallback to reverse proxy
-  }
+  // when someone clicks the big cookie…
+  socket.on('click', () => {
+    totalCookies++;
+    // broadcast new count to everyone
+    io.emit('sync', totalCookies);
+  });
 });
 
-// 2️⃣ Standard reverse-proxy for all other assets and routes
-app.use(
-  '/',
-  createProxyMiddleware({
-    target: 'https://neal.fun',
-    changeOrigin: true,
-    selfHandleResponse: false,
-    pathRewrite: { '^/': '/' },
-    onProxyReq(proxyReq) {
-      proxyReq.removeHeader('accept-encoding');
-      proxyReq.setHeader(
-        'User-Agent',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36'
-      );
-      proxyReq.setHeader('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9');
-      proxyReq.setHeader('Accept-Language', 'en-US,en;q=0.9');
-      proxyReq.setHeader('Referer', 'https://google.com/');
-    },
-    onProxyRes(proxyRes) {
-      // Remove restrictions so CSS/JS/images execute via your domain
-      delete proxyRes.headers['content-security-policy'];
-      delete proxyRes.headers['content-security-policy-report-only'];
-      delete proxyRes.headers['x-frame-options'];
-    }
-  })
-);
+// serve the socket.io client library
+app.use('/socket.io', express.static(
+  require.resolve('socket.io-client/dist/socket.io.js')
+));
 
-app.listen(3000, () => {
-  console.log('Proxy + Puppeteer (networkidle2, viewport & <base> injected) running on http://localhost:3000');
+// —————————————————————————————
+// 2) Proxy & HTML injection
+// —————————————————————————————
+app.use('/', createProxyMiddleware({
+  target: COOKIE_CLICKER_HOST,
+  changeOrigin: true,
+  selfHandleResponse: true,      // so we can transform the HTML
+  onProxyRes: async (proxyRes, req, res) => {
+    // only transform the main game page
+    if (!req.url.startsWith('/cookieclicker/')) {
+      // pipe everything else (assets, JS, CSS) unmodified
+      proxyRes.pipe(res);
+      return;
+    }
+
+    // buffer the HTML
+    let body = '';
+    proxyRes.on('data', chunk => body += chunk);
+    proxyRes.on('end', () => {
+      // inject Socket.IO + sync script just before </head>
+      const inject = `
+        <script src="/socket.io/socket.io.js"></script>
+        <script>
+          const socket = io();
+          // update our local Game.cookies whenever the server broadcasts
+          socket.on('sync', c => {
+            if (window.Game && typeof Game.UpdateCookieDisplay === 'function') {
+              Game.cookies = c;
+              Game.UpdateCookieDisplay();
+            }
+          });
+          // intercept clicks on the big cookie
+          document.addEventListener('click', e => {
+            if (e.target.id === 'bigCookie') {
+              socket.emit('click');
+            }
+          });
+        </script>
+      `;
+
+      // make sure relative paths still work
+      body = body.replace(
+        /<head(\s|>)/i,
+        `<head$1<base href="${COOKIE_CLICKER_HOST}/cookieclicker/">`
+      );
+
+      // inject our script
+      body = body.replace('</head>', inject + '</head>');
+
+      res.setHeader('content-type', 'text/html');
+      res.send(body);
+    });
+  }
+}));
+
+// start everything
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`🔗 Live Cookie Clicker proxy running on http://localhost:${PORT}`);
 });
