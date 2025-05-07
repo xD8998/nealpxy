@@ -1,28 +1,31 @@
 /* eslint-disable no-console */
 require('dotenv').config();
+
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
+const puppeteer = require('puppeteer');
 const puppeteerExtra = require('puppeteer-extra');
-const StealthPlugin  = require('puppeteer-extra-plugin-stealth');
-const ProxyPlugin    = require('puppeteer-extra-plugin-proxy');
-const { Solver }     = require('2captcha-ts');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const ProxyPlugin = require('puppeteer-extra-plugin-proxy');
+const { Solver } = require('2captcha-ts');
 
 puppeteerExtra.use(StealthPlugin());
 
-const proxies = process.env.PROXY_LIST ? process.env.PROXY_LIST.split(',') : [];
-let p = 0;
+const proxies = process.env.PROXY_LIST?.split(',').map(p => p.trim()) || [];
+let idx = 0;
 function nextProxy() {
-  if (!proxies.length) return null;
-  return proxies[p++ % proxies.length].trim();
+  return proxies.length ? proxies[idx++ % proxies.length] : null;
 }
 
-const solver = new Solver(process.env.CAPTCHA_API_KEY || '');
+const captchaSolver = new Solver(process.env.CAPTCHA_API_KEY || '');
 
 async function launchBrowser() {
   const proxyURL = nextProxy();
   if (proxyURL) puppeteerExtra.use(ProxyPlugin({ proxy: proxyURL }));
+
   return puppeteerExtra.launch({
+    executablePath: puppeteer.executablePath(),
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
@@ -30,7 +33,7 @@ async function launchBrowser() {
 
 const app = express();
 
-/* 1️⃣ Headless-rendered route (Cloudflare bypass) */
+// 1️⃣ Headless-rendered route (Cloudflare bypass)
 app.get('/infinite-craft', async (req, res, next) => {
   let browser;
   try {
@@ -46,25 +49,25 @@ app.get('/infinite-craft', async (req, res, next) => {
       Referer: 'https://google.com/'
     });
 
-    // optional CAPTCHA-solver hook…
+    // Optional: hook in captchaSolver here if you need Turnstile solving
 
     await page.goto('https://neal.fun/infinite-craft/', {
       waitUntil: 'domcontentloaded',
-      timeout: 60000              // ⬅️ new 60 s timeout
+      timeout: 60000
     });
 
     const html = await page.content();
     await browser.close();
     return res.send(html);
+
   } catch (err) {
     console.error('Puppeteer route error:', err.message);
     if (browser) await browser.close().catch(() => {});
-    /* fallback to plain proxy */
-    return next();
+    return next(); // fallback to proxy
   }
 });
 
-/* 2️⃣ Standard reverse proxy for everything else */
+// 2️⃣ Standard reverse-proxy for all other assets
 app.use(
   '/',
   createProxyMiddleware({
@@ -72,7 +75,7 @@ app.use(
     changeOrigin: true,
     selfHandleResponse: false,
     pathRewrite: { '^/': '/' },
-    onProxyReq: (proxyReq) => {
+    onProxyReq(proxyReq) {
       proxyReq.removeHeader('accept-encoding');
       proxyReq.setHeader(
         'User-Agent',
@@ -85,6 +88,6 @@ app.use(
   })
 );
 
-app.listen(3000, () =>
-  console.log('Proxy + Puppeteer (60 s timeout) live on http://localhost:3000')
-);
+app.listen(3000, () => {
+  console.log('Proxy + Puppeteer (60 s timeout) live on http://localhost:3000');
+});
