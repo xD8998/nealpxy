@@ -1,7 +1,7 @@
 {
-  "name": "infinite-craft-proxy",
-  "version": "1.1.0",
-  "description": "Full reverse proxy for Infinite Craft with Cloudflare evasions",
+  "name": "cookie-clicker-proxy",
+  "version": "1.0.0",
+  "description": "Live multiplayer proxy for Cookie Clicker using Socket.IO",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,10 +12,7 @@
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "http-proxy-middleware": "^3.0.5",
-    "puppeteer": "^24.8.1",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "puppeteer-extra-plugin-proxy": "^1.0.2",
-    "2captcha-ts": "^2.4.1"
+    "socket.io": "^4.7.2",
+    "socket.io-client": "^4.7.2"
   }
 }
