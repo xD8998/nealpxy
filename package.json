@@ -1,7 +1,7 @@
 {
   "name": "infinite-craft-proxy",
   "version": "1.0.0",
-  "description": "A full reverse proxy for Infinite Craft using Node.js and Express",
+  "description": "A full reverse proxy for Infinite Craft using Node.js, Express, and Puppeteer",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,7 +9,8 @@
   "author": "xD89",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.21.1",
-    "http-proxy-middleware": "^3.0.5"
+    "express": "^5.1.0",
+    "http-proxy-middleware": "^3.0.5",
+    "puppeteer": "^24.8.1"
   }
 }
