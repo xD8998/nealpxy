@@ -1,7 +1,7 @@
 {
   "name": "cookie-clicker-proxy",
   "version": "1.0.0",
-  "description": "Live multiplayer proxy for Cookie Clicker using Socket.IO",
+  "description": "Live multiplayer proxy for Cookie Clicker using Socket.IO, compression, and caching",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -9,10 +9,12 @@
   "author": "xD89",
   "license": "MIT",
   "dependencies": {
+    "apicache": "^1.6.3",
+    "compression": "^1.8.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "http-proxy-middleware": "^3.0.5",
-    "socket.io": "^4.7.2",
-    "socket.io-client": "^4.7.2"
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
   }
 }
