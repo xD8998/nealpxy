@@ -28,13 +28,13 @@ app.use(compression());
 
 // —————————————————————————————
 // 2) Serve local static assets mirror
-//    (you’ll need to run something like
+//    (requires you to mirror with something like
 //     `wget -r -np -k https://orteil.dashnet.org/cookieclicker/ -P ./static-cookie-clicker`)
 // —————————————————————————————
 app.use(
   '/cookieclicker/',
   express.static(path.join(__dirname, 'static-cookie-clicker'), {
-    maxAge: '1d', // cache in-browser for 1 day
+    maxAge: '1d', // browser cache for 1 day
   })
 );
 
@@ -61,66 +61,68 @@ io.on('connection', socket => {
     io.emit('sync', totalCookies);
   });
 });
-app.use('/socket.io',
+app.use(
+  '/socket.io',
   express.static(require.resolve('socket.io-client/dist/socket.io.js'))
 );
 
 // —————————————————————————————
-// 6) Proxy & HTML injection
+// 6) Proxy & HTML injection (no mount path with colons!)
 // —————————————————————————————
-app.use('/', createProxyMiddleware({
-  target: COOKIE_CLICKER_HOST,
-  changeOrigin: true,
-  selfHandleResponse: true,
-  onProxyRes: (proxyRes, req, res) => {
-    // Non‑HTML or non‑game routes: just pipe through
-    if (!req.url.startsWith('/cookieclicker/')) {
-      return proxyRes.pipe(res);
-    }
+app.use(
+  createProxyMiddleware({
+    target: COOKIE_CLICKER_HOST,
+    changeOrigin: true,
+    selfHandleResponse: true,
+    onProxyRes: (proxyRes, req, res) => {
+      // If it’s not the main game HTML, just pipe unchanged
+      if (!req.url.startsWith('/cookieclicker/')) {
+        return proxyRes.pipe(res);
+      }
 
-    // Buffer the HTML
-    let body = '';
-    proxyRes.on('data', chunk => body += chunk);
-    proxyRes.on('end', () => {
-      // 1) Make relative paths work
-      body = body.replace(
-        /<head(\s|>)/i,
-        `<head$1<base href="${COOKIE_CLICKER_HOST}/cookieclicker/">`
-      );
+      let body = '';
+      proxyRes.on('data', chunk => (body += chunk));
+      proxyRes.on('end', () => {
+        // 1) Fix relative paths
+        body = body.replace(
+          /<head(\s|>)/i,
+          `<head$1<base href="${COOKIE_CLICKER_HOST}/cookieclicker/">`
+        );
 
-      // 2) Preload critical assets
-      const preload = `
-        <link rel="preload" href="/cookieclicker/cookieclicker.js" as="script">
-        <link rel="preload" href="/cookieclicker/style.css" as="style">
-      `;
+        // 2) Preload the big bundles ASAP
+        const preload = `
+          <link rel="preload" href="/cookieclicker/cookieclicker.js" as="script">
+          <link rel="preload" href="/cookieclicker/style.css" as="style">
+        `;
 
-      // 3) Inject our Socket.IO + sync script
-      const inject = `
-        <script src="/socket.io/socket.io.js"></script>
-        <script>
-          const socket = io();
-          socket.on('sync', c => {
-            if (window.Game && typeof Game.UpdateCookieDisplay === 'function') {
-              Game.cookies = c;
-              Game.UpdateCookieDisplay();
-            }
-          });
-          document.addEventListener('click', e => {
-            if (e.target.id === 'bigCookie') {
-              socket.emit('click');
-            }
-          });
-        </script>
-      `;
+        // 3) Inject Socket.IO + sync logic
+        const inject = `
+          <script src="/socket.io/socket.io.js"></script>
+          <script>
+            const socket = io();
+            socket.on('sync', c => {
+              if (window.Game && typeof Game.UpdateCookieDisplay === 'function') {
+                Game.cookies = c;
+                Game.UpdateCookieDisplay();
+              }
+            });
+            document.addEventListener('click', e => {
+              if (e.target.id === 'bigCookie') {
+                socket.emit('click');
+              }
+            });
+          </script>
+        `;
 
-      // 4) Insert preload + inject before </head>
-      body = body.replace('</head>', preload + inject + '</head>');
+        // 4) Splice it in
+        body = body.replace('</head>', preload + inject + '</head>');
 
-      res.setHeader('Content-Type', 'text/html');
-      res.send(body);
-    });
-  }
-}));
+        res.setHeader('Content-Type', 'text/html');
+        res.send(body);
+      });
+    },
+  })
+);
 
 // —————————————————————————————
 // 7) Start server
